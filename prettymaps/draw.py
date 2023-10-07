@@ -16,29 +16,41 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
-import re
-import os
 import json
-import yaml
+import os
+
 #import IPython
 import pathlib
+import re
 import warnings
+from copy import deepcopy
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+
+import geopandas as gp
 import matplotlib
-import shapely.ops
 import numpy as np
 import osmnx as ox
 import pandas as pd
-import geopandas as gp
 import shapely.affinity
-from copy import deepcopy
-from .fetch import get_gdfs
-from dataclasses import dataclass
+import shapely.ops
+import yaml
 from matplotlib import pyplot as plt
 from matplotlib.colors import hex2color
 from matplotlib.patches import Path, PathPatch
-from typing import Optional, Union, Tuple, List, Dict, Any, Iterable
+from py5 import Sketch
+from shapely.geometry import (
+    GeometryCollection,
+    LineString,
+    MultiLineString,
+    MultiPolygon,
+    Point,
+    Polygon,
+    box,
+)
 from shapely.geometry.base import BaseGeometry
-from shapely.geometry import Point, LineString, MultiLineString, Polygon, MultiPolygon, GeometryCollection, box
+
+from .fetch import get_gdfs
 
 #import vsketch
 
@@ -194,6 +206,8 @@ def plot_gdf(
     ax: matplotlib.axes.Axes,
     mode: str = 'matplotlib',
     #vsk: Optional[vsketch.SketchClass] = None,
+    sketch: Sketch = None,
+    extents: Optional[Tuple[float, float, float, float]] = None,
     vsk=None,
     palette: Optional[List[str]] = None,
     width: Optional[Union[dict, float]] = None,
@@ -237,6 +251,11 @@ def plot_gdf(
 
     if (palette is None) and ("fc" in kwargs) and (type(kwargs["fc"]) != str):
         palette = kwargs.pop("fc")
+
+    if mode == 'py5':
+        sketch.push_matrix()
+        sketch.scale(sketch.width / (extents[2] - extents[0]), sketch.height / (extents[3] - extents[1]))
+        sketch.translate(-extents[0], -extents[1])
 
     # Plot shapes
     for shape in geometries:
@@ -318,8 +337,33 @@ def plot_gdf(
                     vsk.noFill()
 
                 vsk.geometry(shape)
+        elif mode == "py5":
+            if ("draw" not in kwargs) or kwargs["draw"]:
+
+                with sketch.push_style():
+                    if "ec" in kwargs:
+                        sketch.stroke(kwargs["ec"])
+                    else:
+                        sketch.no_stroke()
+
+                    if "penWidth" in kwargs:
+                        sketch.stroke_weight(kwargs["penWidth"])
+                    else:
+                        sketch.stroke_weight(1)
+
+                    if "fc" in kwargs:
+                        sketch.fill(kwargs["fc"])
+                    else:
+                        sketch.no_fill()
+
+                    sketch.shape(sketch.convert_shape(shape, flip_y_axis=False))
+
         else:
             raise Exception(f"Unknown mode {mode}")
+
+    if mode == 'py5':
+        sketch.pop_matrix()
+
 
 ##########
 
@@ -592,6 +636,30 @@ def draw_text(
     )
 
 
+def draw_py5_text(sketch: Sketch):
+    text="\n".join([
+        "data © OpenStreetMap contributors",
+        "github.com/marceloprates/prettymaps"
+    ])
+    text_size = 16
+
+    with sketch.push_style():
+        sketch.text_align(sketch.LEFT, sketch.TOP)
+        sketch.text_size(text_size)
+
+        sketch.fill(255)
+        sketch.stroke(0)
+        sketch.stroke_weight(3)
+
+        width = sketch.text_width(text)
+        sketch.rect(20, 20, width + 10, 2 * (text_size + 5))
+
+        sketch.fill(0)
+        sketch.no_stroke()
+
+        sketch.text(text, 25, 25)
+
+
 def presets_directory():
     return os.path.join(pathlib.Path(__file__).resolve().parent, 'presets')
 
@@ -818,6 +886,7 @@ def plot(
     fig=None,
     ax=None,
     title=None,
+    sketch=None,
     figsize=(12, 12),
     constrained_layout=True,
     # Credit message parameters
@@ -955,11 +1024,24 @@ def plot(
                     width=layers[layer]["width"] if "width" in layers[layer] else None,
                     **(style[layer] if layer in style else {}),
                 )
+    elif mode == "py5":
+        for layer in gdfs:
+            if layer in layers:
+                plot_gdf(
+                    layer,
+                    gdfs[layer],
+                    ax,
+                    width=layers[layer]["width"] if "width" in layers[layer] else None,
+                    mode=mode,
+                    sketch=sketch,
+                    extents=(xmin, ymin, xmax, ymax),
+                    **(style[layer] if layer in style else {}),
+                )
     else:
         raise Exception(f'Unknown mode {mode}')
 
     # 9. Draw background
-    if "background" in style:
+    if "background" in style and mode != "py5":
         zorder = style["background"].pop(
             "zorder") if "zorder" in style["background"] else -1
         ax.add_patch(PolygonPatch(
@@ -968,6 +1050,8 @@ def plot(
     # 10. Draw credit message
     if (mode == "matplotlib") and (credit != False) and (not multiplot):
         draw_text(credit, background)
+    elif (mode == "py5") and (credit != False):
+        draw_py5_text(sketch)
 
     # 11. Ajust figure and create PIL Image
     if mode == "matplotlib":
